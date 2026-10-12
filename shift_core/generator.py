@@ -81,7 +81,8 @@ class ShiftGeneratorService:
                 auto_target_months,
                 holidays_jp_dict,
                 init_tail_shifts,
-                init_main_offs
+                init_main_offs,
+                config
             ) = load_and_parse_data(input_file)
         except Exception as e:
             err = f"データ読み込みエラー: {e}"
@@ -132,7 +133,8 @@ class ShiftGeneratorService:
                 'holidays_jp_dict': holidays_jp_dict,
                 'target_file': input_file,
                 'year': t_year,
-                'month': t_month
+                'month': t_month,
+                'config': config
             }
             prev_m_data = {
                 'tail_shifts': prev_tail_shifts,

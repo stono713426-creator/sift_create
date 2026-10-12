@@ -8,7 +8,7 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from .config import SECTION_DEFINITIONS
+from .config import SECTION_DEFINITIONS, ShiftConfig
 from .parser import get_days_in_month
 
 def apply_cell_style(
@@ -46,6 +46,7 @@ def render_monthly_sheet(
     staff_list = monthly_data['staff_list']
     ope_dict = monthly_data['ope_dict']
     holidays_jp_dict = monthly_data['holidays_jp_dict']
+    cfg: ShiftConfig = monthly_data.get('config') or ShiftConfig()
     
     ws.title = f"{year}年{month:02d}月シフト"
     ws.views.sheetView[0].showGridLines = True
@@ -180,7 +181,7 @@ def render_monthly_sheet(
                 else:
                     apply_cell_style(c_cell, "公", font=f_gray, fill=row_fill, alignment=align_c, border=border_thin)
                     
-        if not is_holiday and cnt_2f_b == 2:
+        if not is_holiday and cnt_2f_b <= cfg.warn_2f_back_count:
             apply_cell_style(c_d, "⚠️", font=f_red, fill=fill_warn, alignment=align_c, border=border_thin)
         
         for sec, (sc, ec, cc) in sec_col_ranges.items():

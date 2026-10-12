@@ -218,13 +218,18 @@ class ShiftGeneratorApp(ctk.CTk):
         badge_parts.append(f"スタッフ数: {info['staff_count']}名")
         badge_parts.append(f"制約ルール: {info['rules_count']}件")
         if info['has_prev_month']:
-            badge_parts.append(f"前月実績シート: あり (連動有効)")
+            badge_parts.append("前月実績シート: あり (連動有効)")
         else:
             badge_parts.append("前月実績シート: なし (単月モード)")
 
+        if info.get('has_settings'):
+            badge_parts.append("設定シート: あり (動的パラメータ適用)")
+        else:
+            badge_parts.append("設定シート: なし (標準初期値)")
+
         self.info_lbl.configure(
             text=" | ".join(badge_parts),
-            text_color="#64B5F6" if info['has_prev_month'] else "gray"
+            text_color="#64B5F6" if info['has_prev_month'] or info.get('has_settings') else "gray"
         )
 
         # 対象月チェックボックスの再構築

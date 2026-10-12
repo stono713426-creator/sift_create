@@ -1,0 +1,48 @@
+"""
+テスト用Excelに『設定』シート（10項目）を追加するスクリプト
+"""
+import openpyxl
+
+SETTINGS_ROWS = [
+    ["設定項目", "設定値", "初期値", "単位/選択肢", "説明"],
+    ["2階裏_基本人数", 3, 3, "名", "2階裏の基本出勤人数（有休時はここから減算）"],
+    ["2階裏_看護師最低人数", 1, 1, "名", "2階裏で絶対に欠かせない看護師の最低人数 (HARD制約)"],
+    ["2階裏_看護師推奨人数", 2, 2, "名", "2階裏で理想とされる看護師の人数 (不足時ソフトペナルティ)"],
+    ["連勤上限日数", 5, 5, "日", "連続勤務の上限日数（5なら6連勤を禁止）"],
+    ["固定公休_削減許容日数", 2, 2, "日", "カレンダー物理不足時の固定公休者の削減下限 (目標-N日)"],
+    ["3連休抑制レベル", "中", "中", "強 / 中 / 弱 / なし", "有休を除く通常の3連休発生を抑える強さ"],
+    ["セクション人数ブレ幅", 1, 1, "名", "各セクションの平均出勤人数からの許容範囲 (平均±N名)"],
+    ["週休配分目標", 2, 2, "日", "7日間ローリング期間中の公休目標日数 (週休2日平準化の基準)"],
+    ["既存シフト維持レベル", "中", "中", "強 / 中 / 弱", "前回の生成結果がある場合の維持の強さ"],
+    ["2階裏_警告表示人数", 2, 2, "名以下", "Excel出力時に警告マーク(⚠️)を付ける2階裏の出勤人数"],
+]
+
+def add_settings_sheet_to_file(filepath: str):
+    wb = openpyxl.load_workbook(filepath)
+    if "設定" in wb.sheetnames:
+        del wb["設定"]
+    
+    ws = wb.create_sheet("設定")
+    for row in SETTINGS_ROWS:
+        ws.append(row)
+        
+    # 列幅調整
+    ws.column_dimensions['A'].width = 24.0
+    ws.column_dimensions['B'].width = 12.0
+    ws.column_dimensions['C'].width = 12.0
+    ws.column_dimensions['D'].width = 18.0
+    ws.column_dimensions['E'].width = 45.0
+    
+    wb.save(filepath)
+    wb.close()
+    print(f"『設定』シートを追加しました: {filepath}")
+
+def main():
+    for f in ["ope勤務条件表_2026.xlsx", "ope勤務条件表_2026_4sheets.xlsx"]:
+        try:
+            add_settings_sheet_to_file(f)
+        except Exception as e:
+            print(f"エラー ({f}): {e}")
+
+if __name__ == "__main__":
+    main()

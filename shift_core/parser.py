@@ -8,6 +8,115 @@ from typing import Dict, List, Set, Tuple, Optional, Any
 import openpyxl
 import pandas as pd
 from .holidays import fetch_holidays
+from .config import ShiftConfig
+
+def parse_settings_sheet(wb_in: openpyxl.Workbook) -> ShiftConfig:
+    """『設定』または『システム設定』シートから動的パラメータを読み込み"""
+    config = ShiftConfig()
+    
+    # シート検索
+    target_sheet_name = next(
+        (s for s in wb_in.sheetnames if any(k in s for k in ['設定', 'システム設定', 'パラメータ', 'config'])),
+        None
+    )
+    if not target_sheet_name:
+        return config
+
+    try:
+        ws_cfg = wb_in[target_sheet_name]
+        data = [[cell.value for cell in row] for row in ws_cfg.iter_rows()]
+        if len(data) < 2:
+            return config
+
+        # ヘッダー行検索
+        header_row_idx = 0
+        for r_idx in range(min(4, len(data))):
+            row_str = [str(c) for c in data[r_idx] if c is not None]
+            if any('項目' in s or '設定' in s for s in row_str) and any('値' in s for s in row_str):
+                header_row_idx = r_idx
+                break
+
+        headers = [str(c).strip() if c is not None else "" for c in data[header_row_idx]]
+        key_col = next((i for i, h in enumerate(headers) if any(k in h for k in ['項目', 'キー', '名前'])), 0)
+        val_col = next((i for i, h in enumerate(headers) if any(k in h for k in ['値', '設定値'])), 1)
+
+        raw_settings = {}
+        for r in range(header_row_idx + 1, len(data)):
+            row = data[r]
+            if len(row) > max(key_col, val_col):
+                k = row[key_col]
+                v = row[val_col]
+                if k is not None and v is not None and str(k).strip():
+                    raw_settings[str(k).strip()] = v
+
+        # 1. 2階裏 基本人数
+        for k in ['2階裏_基本人数', '2階裏基本人数', '2階裏_基準人数']:
+            if k in raw_settings:
+                try: config.sec_2f_back_base_cap = int(float(raw_settings[k]))
+                except: pass
+
+        # 2. 2階裏 看護師最低人数
+        for k in ['2階裏_看護師最低人数', '看護師最低人数', '2階裏看護師最低']:
+            if k in raw_settings:
+                try: config.nurse_min_count = int(float(raw_settings[k]))
+                except: pass
+
+        # 3. 2階裏 看護師推奨人数
+        for k in ['2階裏_看護師推奨人数', '看護師推奨人数', '2階裏看護師推奨']:
+            if k in raw_settings:
+                try: config.nurse_rec_count = int(float(raw_settings[k]))
+                except: pass
+
+        # 4. 連勤上限日数
+        for k in ['連勤上限日数', '連勤上限', '最大連勤数']:
+            if k in raw_settings:
+                try: config.max_consecutive_work_days = int(float(raw_settings[k]))
+                except: pass
+
+        # 5. 固定公休 削減許容日数
+        for k in ['固定公休_削減許容日数', '固定公休削減許容', '固定公休不足許容']:
+            if k in raw_settings:
+                try: config.fixed_off_shortage_allowance = int(float(raw_settings[k]))
+                except: pass
+
+        # 6. 3連休抑制レベル
+        for k in ['3連休抑制レベル', '3連休抑制', '3連休ペナルティ']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['強', '中', '弱', 'なし']:
+                    config.consecutive_off_level = val
+
+        # 7. セクション人数ブレ幅
+        for k in ['セクション人数ブレ幅', '人数ブレ幅', '許容ブレ幅']:
+            if k in raw_settings:
+                try: config.sec_capacity_tolerance = int(float(raw_settings[k]))
+                except: pass
+
+        # 8. 週休配分目標
+        for k in ['週休配分目標', '週休目標', '週休配分']:
+            if k in raw_settings:
+                try: config.weekly_off_target = int(float(raw_settings[k]))
+                except: pass
+
+        # 9. 既存シフト維持レベル
+        for k in ['既存シフト維持レベル', 'シフト維持レベル', '前回シフト維持']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['強', '中', '弱']:
+                    config.existing_shift_weight_level = val
+
+        # 10. 2階裏 警告表示人数
+        for k in ['2階裏_警告表示人数', '2階裏警告人数', '警告表示人数']:
+            if k in raw_settings:
+                try: config.warn_2f_back_count = int(float(raw_settings[k]))
+                except: pass
+
+        print(f"★ 『{target_sheet_name}』シートから動的パラメータを正常に読み込みました。")
+
+    except Exception as e:
+        print(f"警告: 設定シートのパース中にエラーが発生しました（初期値を使用します）: {e}")
+
+    return config
 
 def get_days_in_month(year: int, month: int) -> int:
     """指定年月の総日数を取得"""
@@ -315,8 +424,11 @@ def load_and_parse_data(filepath: str) -> tuple:
         except Exception as e:
             print(f"前月実績シートの解析警告: {e}")
 
+    # 設定シートの読み込み
+    config = parse_settings_sheet(wb_in)
+
     wb_in.close()
-    return staff_list, df_rules, ope_dict_all, target_months, holidays_jp_dict, prev_month_tail_shifts, prev_month_main_offs
+    return staff_list, df_rules, ope_dict_all, target_months, holidays_jp_dict, prev_month_tail_shifts, prev_month_main_offs, config
 
 def inspect_excel_file(filepath: str) -> dict:
     """
@@ -329,6 +441,8 @@ def inspect_excel_file(filepath: str) -> dict:
         'staff_count': 0,
         'has_prev_month': False,
         'prev_month_sheet_name': None,
+        'has_settings': False,
+        'settings_sheet_name': None,
         'rules_count': 0
     }
     try:
@@ -365,9 +479,18 @@ def inspect_excel_file(filepath: str) -> dict:
                     info['target_months'] = sorted(list(t_months))
 
         # 前月実績
-        if len(wb.sheetnames) >= 4:
-            info['has_prev_month'] = True
-            info['prev_month_sheet_name'] = wb.sheetnames[3]
+        for s in wb.sheetnames:
+            if any(k in s for k in ['実績', '前月']):
+                info['has_prev_month'] = True
+                info['prev_month_sheet_name'] = s
+                break
+
+        # 設定シート
+        for s in wb.sheetnames:
+            if any(k in s for k in ['設定', 'システム設定', 'パラメータ', 'config']):
+                info['has_settings'] = True
+                info['settings_sheet_name'] = s
+                break
 
         wb.close()
     except Exception as e:

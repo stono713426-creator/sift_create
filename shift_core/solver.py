@@ -19,17 +19,16 @@ from .config import (
     WEIGHT_2F_BACK_5_PENALTY,
     WEIGHT_SEC_BALANCE_SQ,
     WEIGHT_SEC_BALANCE_ABS,
-    WEIGHT_SHIFT_CHANGE,
     WEIGHT_MAIN_OFF_MISMATCH,
     WEIGHT_2F_BACK_3_PENALTY,
     WEIGHT_NURSE_LT2_PENALTY,
     WEIGHT_SPECIAL_EXTRA_WORK,
-    WEIGHT_OFF_3CONSEC,
     WEIGHT_ROLLING_WINDOW_DIFF,
     WEIGHT_PREV_OFF_REPEAT,
     WEIGHT_TAIL_OFF_SUM,
     SOLVER_MAX_TIME_SECONDS,
     SOLVER_NUM_SEARCH_WORKERS,
+    ShiftConfig,
 )
 from .parser import get_days_in_month, parse_date_list, parse_rule_target_dates
 
@@ -41,6 +40,7 @@ def solve_monthly_shift(
     stage: int
 ) -> tuple:
     """単月のシフト最適化モデルを構築・求解"""
+    cfg: ShiftConfig = monthly_data.get('config') or ShiftConfig()
     staff_list = monthly_data['staff_list']
     df_rules = monthly_data['df_rules']
     ope_dict = monthly_data['ope_dict']
@@ -174,7 +174,7 @@ def solve_monthly_shift(
                     else:
                         model.Add(x[(sname, d)] == 1).OnlyEnforceIf(diff_var)
                         model.Add(x[(sname, d)] == 0).OnlyEnforceIf(diff_var.Not())
-                    penalties.append(diff_var * WEIGHT_SHIFT_CHANGE)
+                    penalties.append(diff_var * cfg.weight_shift_change)
 
     for s in staff_list:
         name = s['name']
@@ -203,7 +203,7 @@ def solve_monthly_shift(
                 
                 # 【固定公休特例スラック化 ＆ シワ寄せ防止】
                 model.Add(month_sum_var <= target_days)
-                model.Add(month_sum_var >= max(0, target_days - 2))
+                model.Add(month_sum_var >= max(0, target_days - cfg.fixed_off_shortage_allowance))
                 
                 shortage = model.NewIntVar(0, 31, f"shortage_{name}")
                 model.Add(shortage == target_days - month_sum_var)
@@ -230,23 +230,25 @@ def solve_monthly_shift(
                 if valid_w:
                     model.AddExactlyOne([y_mo[(name, w)] for w in valid_w])
 
-        # 6連勤絶対禁止
+        # 連勤上限日数制約 (動的パラメータ)
+        k_days = cfg.max_consecutive_work_days
         prev_tail = prev_month_tail_shifts.get(name, [])
-        if len(prev_tail) < 5:
-            prev_tail = [0] * (5 - len(prev_tail)) + prev_tail
+        if len(prev_tail) < k_days:
+            prev_tail = [0] * (k_days - len(prev_tail)) + prev_tail
         combined_vars = prev_tail + [x[(name, d)] for d in all_dates]
-        for i in range(len(combined_vars) - 5):
-            model.Add(sum(combined_vars[i:i+6]) <= 5)
+        for i in range(len(combined_vars) - k_days):
+            model.Add(sum(combined_vars[i:i + k_days + 1]) <= k_days)
 
         # 共通ソフトペナルティ
         if s.get('is_core'):
             work_dates = [d for d in all_dates if d.weekday() != 6 and d not in holidays_jp]
-            for i in range(len(work_dates) - 2):
-                d1, d2, d3 = work_dates[i], work_dates[i+1], work_dates[i+2]
-                off3_var = model.NewBoolVar(f"off3_{name}_{d1}")
-                model.Add(x[(name, d1)] + x[(name, d2)] + x[(name, d3)] == 0).OnlyEnforceIf(off3_var)
-                model.Add(x[(name, d1)] + x[(name, d2)] + x[(name, d3)] > 0).OnlyEnforceIf(off3_var.Not())
-                penalties.append(off3_var * WEIGHT_OFF_3CONSEC)
+            if cfg.weight_off_3consec > 0:
+                for i in range(len(work_dates) - 2):
+                    d1, d2, d3 = work_dates[i], work_dates[i+1], work_dates[i+2]
+                    off3_var = model.NewBoolVar(f"off3_{name}_{d1}")
+                    model.Add(x[(name, d1)] + x[(name, d2)] + x[(name, d3)] == 0).OnlyEnforceIf(off3_var)
+                    model.Add(x[(name, d1)] + x[(name, d2)] + x[(name, d3)] > 0).OnlyEnforceIf(off3_var.Not())
+                    penalties.append(off3_var * cfg.weight_off_3consec)
 
             if s.get('basic_off_type') == 'OR':
                 for d in all_dates:
@@ -275,7 +277,7 @@ def solve_monthly_shift(
                 off_sum = sum(1 - v for v in window)
                 diff = model.NewIntVar(-7, 7, f"w_diff_{name}_{i}")
                 abs_diff = model.NewIntVar(0, 7, f"w_abs_diff_{name}_{i}")
-                model.Add(diff == off_sum - 2)
+                model.Add(diff == off_sum - cfg.weekly_off_target)
                 model.AddAbsEquality(abs_diff, diff)
                 penalties.append(abs_diff * WEIGHT_ROLLING_WINDOW_DIFF)
 
@@ -305,14 +307,14 @@ def solve_monthly_shift(
             if d.weekday() != 6 and d not in holidays_jp:
                 M_s = ideal_mean[sec]
                 
-                # 【2階裏特例】ハードコーディング絶対3名
+                # 【2階裏特例】動的パラメータ (デフォルト3名)
                 if sec == "2階裏":
                     vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
-                    eff_min_cap = max(1, 3 - vac_in_sec) 
-                    max_cap = int(math.ceil(M_s)) + 1 
+                    eff_min_cap = max(1, cfg.sec_2f_back_base_cap - vac_in_sec) 
+                    max_cap = int(math.ceil(M_s)) + cfg.sec_capacity_tolerance
                 else:
-                    min_cap = max(1, int(math.floor(M_s)) - 1)
-                    max_cap = int(math.ceil(M_s)) + 1
+                    min_cap = max(1, int(math.floor(M_s)) - cfg.sec_capacity_tolerance)
+                    max_cap = int(math.ceil(M_s)) + cfg.sec_capacity_tolerance
                     vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
                     eff_min_cap = max(1, min_cap - vac_in_sec)
                 
@@ -353,17 +355,20 @@ def solve_monthly_shift(
         nurse_2f_names = [s['name'] for s in staff_list if s['section'] == '2階裏' and s['job_role'] == '看護師']
         if d.weekday() != 6 and d not in holidays_jp and nurse_2f_names:
             nurse_cnt = sum(x[(n, d)] for n in nurse_2f_names)
+            # 最低人数制約 (動的パラメータ)
             if stage == 1:
-                model.Add(nurse_cnt >= 1)
+                model.Add(nurse_cnt >= cfg.nurse_min_count)
             else:
                 slack_n = model.NewIntVar(0, len(nurse_2f_names), f"slack_nurse_{d}")
-                model.Add(nurse_cnt + slack_n >= 1)
+                model.Add(nurse_cnt + slack_n >= cfg.nurse_min_count)
                 penalties.append(slack_n * WEIGHT_NURSE_DEFICIT_SLACK)
             
-            is_lt_2 = model.NewBoolVar(f"nurse_lt2_{d}")
-            model.Add(nurse_cnt < 2).OnlyEnforceIf(is_lt_2)
-            model.Add(nurse_cnt >= 2).OnlyEnforceIf(is_lt_2.Not())
-            penalties.append(is_lt_2 * WEIGHT_NURSE_LT2_PENALTY)
+            # 推奨人数制約 (動的パラメータ)
+            if cfg.nurse_rec_count > cfg.nurse_min_count:
+                is_lt_rec = model.NewBoolVar(f"nurse_lt_rec_{d}")
+                model.Add(nurse_cnt < cfg.nurse_rec_count).OnlyEnforceIf(is_lt_rec)
+                model.Add(nurse_cnt >= cfg.nurse_rec_count).OnlyEnforceIf(is_lt_rec.Not())
+                penalties.append(is_lt_rec * WEIGHT_NURSE_LT2_PENALTY)
 
     for idx, row in df_rules.iterrows():
         r_cond = str(row.get('適用条件', '')).strip()
