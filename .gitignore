@@ -1,0 +1,19 @@
+# Python関連（仮想環境やキャッシュ）
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Node.js関連（ライブラリ）
+node_modules/
+
+# 秘密情報・環境変数
+.env
+*.local
+
+# OS・エディタの一時ファイル
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
