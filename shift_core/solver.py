@@ -12,6 +12,7 @@ import openpyxl
 
 from .config import (
     LEVEL_WEIGHT_MAP,
+    REC_WEIGHT_MAP,
     WEIGHT_FIXED_OFF_SHORTAGE,
     WEIGHT_2F_BACK_MIN_SLACK,
     WEIGHT_GENERAL_SEC_SLACK,
@@ -396,12 +397,15 @@ def solve_monthly_shift(
             sum_x = sum(x[(n, d)] for n in valid_staffs)
             eff_min = max(val_min, len(valid_staffs) - val_min) if '同時休み' in r_type else val_min
             
-            if r_lvl == 'HARD':
-                if stage == 1: model.Add(sum_x >= eff_min)
+            is_hard = 'HARD' in r_lvl
+            if is_hard:
+                if stage == 1:
+                    model.Add(sum_x >= eff_min)
                 else:
                     slack_min = model.NewIntVar(0, len(valid_staffs), f"slack_min_{idx}_{d}")
                     model.Add(sum_x + slack_min >= eff_min)
-                    penalties.append(slack_min * LEVEL_WEIGHT_MAP['HARD'])
+                    weight = LEVEL_WEIGHT_MAP.get(r_lvl, LEVEL_WEIGHT_MAP['HARD'])
+                    penalties.append(slack_min * weight)
             else:
                 weight = LEVEL_WEIGHT_MAP.get(r_lvl, LEVEL_WEIGHT_MAP['SOFT'])
                 slack_min = model.NewIntVar(0, len(valid_staffs), f"slack_min_{idx}_{d}")
@@ -411,7 +415,7 @@ def solve_monthly_shift(
             if val_rec > eff_min:
                 slack_rec = model.NewIntVar(0, len(valid_staffs), f"slack_rec_{idx}_{d}")
                 model.Add(sum_x + slack_rec >= val_rec)
-                rec_weight = 5000000 if r_lvl == 'HIGH' else 200000
+                rec_weight = REC_WEIGHT_MAP.get(r_lvl, 200000)
                 penalties.append(slack_rec * rec_weight)
 
     if penalties:

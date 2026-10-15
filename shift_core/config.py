@@ -5,12 +5,50 @@
 from dataclasses import dataclass
 from typing import Dict, List, Any
 
-# 制約レベルごとのペナルティ重み
+# 制約レベルごとのペナルティ重み (10段階体系)
 LEVEL_WEIGHT_MAP: Dict[str, int] = {
-    'HARD': 15000000,
-    'HIGH': 12000000,
-    'SOFT': 100000,
-    'LOW': 20000
+    # HARD系 (Stage 1厳格探索、Stage 2スラック緩和順位)
+    'HARD1': 20000000,
+    'HARD2': 16000000,
+    'HARD3': 14000000,
+    'HARD':  16000000,  # 従来のHARDはHARD2互換
+
+    # HIGH系 (高優先業務要件)
+    'HIGH1': 12000000,
+    'HIGH2': 9000000,
+    'HIGH3': 6000000,
+    'HIGH':  9000000,   # 従来のHIGHはHIGH2互換
+
+    # SOFT系 (通常希望・平準化バランス)
+    'SOFT1': 400000,
+    'SOFT2': 100000,
+    'SOFT3': 50000,
+    'SOFT':  100000,   # 従来のSOFTはSOFT2互換
+
+    # LOW系 (努力目標)
+    'LOW':   20000,
+    'LOW1':  20000,
+}
+
+# 推奨人数 (val_rec) 不足ペナルティ重み
+REC_WEIGHT_MAP: Dict[str, int] = {
+    'HARD1': 6000000,
+    'HARD2': 5000000,
+    'HARD3': 4000000,
+    'HARD':  5000000,
+
+    'HIGH1': 6000000,
+    'HIGH2': 4000000,
+    'HIGH3': 2000000,
+    'HIGH':  4000000,
+
+    'SOFT1': 400000,
+    'SOFT2': 200000,
+    'SOFT3': 100000,
+    'SOFT':  200000,
+
+    'LOW':   50000,
+    'LOW1':  50000,
 }
 
 # システム最上位ペナルティ
