@@ -127,6 +127,8 @@ class ShiftConfig:
     sec_2f_back_weekly_4_min: int = 2
     # 14. 空欄スタッフの公休固定＆ローテーション (Trueなら希望公休が空欄のスタッフに平日主公休を設定し翌月ローテーション)
     auto_rotate_off_rule: bool = True
+    # 15. 指定公休日のHARD適用 (Trueならスタッフマスタの指定公休日をHARD制約として強制適用)
+    specified_off_rule: bool = True
 
     @property
     def substitute_holiday_off(self) -> bool:

@@ -144,6 +144,15 @@ def parse_settings_sheet(wb_in: openpyxl.Workbook) -> ShiftConfig:
                 elif val in ['有効', 'オン', 'True', 'true', '1', 'する', 'あり']:
                     config.auto_rotate_off_rule = True
 
+        # 15. 指定公休日のHARD適用 (v1.8)
+        for k in ['指定公休日_有効', '指定公休日有効', '指定公休_有効', '指定公休有効', '指定公休日_HARD適用', '指定公休_HARD適用', '指定公休日']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['無効', 'オフ', 'False', 'false', '0', 'しない', 'なし']:
+                    config.specified_off_rule = False
+                elif val in ['有効', 'オン', 'True', 'true', '1', 'する', 'あり']:
+                    config.specified_off_rule = True
+
         print(f"★ 『{target_sheet_name}』シートから動的パラメータを正常に読み込みました。")
 
 
@@ -167,6 +176,15 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
     val_str = str(val_str).strip()
     res = set()
     
+    def _normalize_date_str(s: str) -> str:
+        s = s.strip()
+        if not s: return s
+        if s.count('/') == 1:
+            return f"{default_year}/{s}"
+        elif '/' not in s:
+            return f"{default_year}/{s}"
+        return s
+
     for part in re.split(r'[,\n、\s]+', val_str):
         part = part.strip()
         if not part: continue
@@ -179,8 +197,8 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
         if separator and len(part.split(separator)) == 2:
             sp = part.split(separator)
             try:
-                s_str = sp[0] if '/' in sp[0] else f"{default_year}/{sp[0]}"
-                e_str = sp[1] if '/' in sp[1] else f"{default_year}/{sp[1]}"
+                s_str = _normalize_date_str(sp[0])
+                e_str = _normalize_date_str(sp[1])
                 start_dt = pd.to_datetime(s_str, errors='coerce')
                 end_dt = pd.to_datetime(e_str, errors='coerce')
                 if pd.notna(start_dt) and pd.notna(end_dt):
@@ -199,7 +217,7 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
                 pass
         
         try:
-            d_str = part if '/' in part else f"{default_year}/{part}"
+            d_str = _normalize_date_str(part)
             dt = pd.to_datetime(d_str, errors='coerce')
             if pd.notna(dt):
                 d_obj = dt.date()
@@ -362,7 +380,10 @@ def load_and_parse_data(filepath: str) -> tuple:
         
     vac_col = next((c for c in df_staff.columns if c and ('有休' in str(c) and '特別' not in str(c))), None)
     sp_vac_col = next((c for c in df_staff.columns if c and ('特別' in str(c))), None)
-    pref_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['希望休', '希望公休'])), None)
+    pref_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['希望休'])), None)
+    specified_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['指定公休', '公休指定'])), None)
+    if not specified_off_col:
+        specified_off_col = next((c for c in df_staff.columns if c and ('公休' in str(c) and '曜日' not in str(c) and any(k in str(c) for k in ['指定', '日']))), None)
     
     holidays_set = fetch_holidays()
     holidays_jp_dict = {d: name for d, name in holidays_set}
@@ -392,7 +413,8 @@ def load_and_parse_data(filepath: str) -> tuple:
             'pref_weekdays_str': pref,
             'raw_vacation': row.get(vac_col),
             'raw_special_vacation': row.get(sp_vac_col),
-            'raw_preferred_off': row.get(pref_off_col)
+            'raw_preferred_off': row.get(pref_off_col),
+            'raw_specified_off': row.get(specified_off_col)
         }
         
         wd_map = {"月": 0, "火": 1, "水": 2, "木": 3, "金": 4, "土": 5, "日": 6}

@@ -109,6 +109,15 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
     val_str = str(val_str).strip()
     res = set()
     
+    def _normalize_date_str(s: str) -> str:
+        s = s.strip()
+        if not s: return s
+        if s.count('/') == 1:
+            return f"{default_year}/{s}"
+        elif '/' not in s:
+            return f"{default_year}/{s}"
+        return s
+
     for part in re.split(r'[,\n、\s]+', val_str):
         part = part.strip()
         if not part: continue
@@ -121,8 +130,8 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
         if separator and len(part.split(separator)) == 2:
             sp = part.split(separator)
             try:
-                s_str = sp[0] if '/' in sp[0] else f"{default_year}/{sp[0]}"
-                e_str = sp[1] if '/' in sp[1] else f"{default_year}/{sp[1]}"
+                s_str = _normalize_date_str(sp[0])
+                e_str = _normalize_date_str(sp[1])
                 start_dt = pd.to_datetime(s_str, errors='coerce')
                 end_dt = pd.to_datetime(e_str, errors='coerce')
                 if pd.notna(start_dt) and pd.notna(end_dt):
@@ -141,7 +150,7 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
                 pass
         
         try:
-            d_str = part if '/' in part else f"{default_year}/{part}"
+            d_str = _normalize_date_str(part)
             dt = pd.to_datetime(d_str, errors='coerce')
             if pd.notna(dt):
                 d_obj = dt.date()
@@ -168,7 +177,10 @@ def load_and_parse_data(filepath: str) -> tuple:
         
     vac_col = next((c for c in df_staff.columns if c and ('有休' in str(c) and '特別' not in str(c))), None)
     sp_vac_col = next((c for c in df_staff.columns if c and ('特別' in str(c))), None)
-    pref_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['希望休', '希望公休'])), None)
+    pref_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['希望休'])), None)
+    specified_off_col = next((c for c in df_staff.columns if c and any(k in str(c) for k in ['指定公休', '公休指定'])), None)
+    if not specified_off_col:
+        specified_off_col = next((c for c in df_staff.columns if c and ('公休' in str(c) and '曜日' not in str(c) and any(k in str(c) for k in ['指定', '日']))), None)
     
     holidays_set = fetch_holidays()
     holidays_jp_dict = {d: name for d, name in holidays_set}
@@ -199,7 +211,8 @@ def load_and_parse_data(filepath: str) -> tuple:
             'pref_weekdays_str': pref,
             'raw_vacation': row.get(vac_col),
             'raw_special_vacation': row.get(sp_vac_col),
-            'raw_preferred_off': row.get(pref_off_col)
+            'raw_preferred_off': row.get(pref_off_col),
+            'raw_specified_off': row.get(specified_off_col)
         }
         
         wd_map = {"月": 0, "火": 1, "水": 2, "木": 3, "金": 4, "土": 5, "日": 6}
@@ -301,6 +314,7 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
         s['vacation_dates'] = parse_date_list(s['raw_vacation'], target_year, holidays_jp_dict)
         s['special_vacation_dates'] = parse_date_list(s['raw_special_vacation'], target_year, holidays_jp_dict)
         s['preferred_off_dates'] = parse_date_list(s['raw_preferred_off'], target_year)
+        s['specified_off_dates'] = parse_date_list(s.get('raw_specified_off'), target_year, holidays_jp_dict)
 
     part_schedule_dict = {}
     wd_map = {"月": 0, "火": 1, "水": 2, "木": 3, "金": 4, "土": 5, "日": 6}
@@ -311,7 +325,8 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
             s['pref_weekdays'] = pref_w
             for d in all_dates:
                 if d.weekday() in pref_w and d.weekday() != 6 and d not in holidays_jp:
-                    if d not in s.get('vacation_dates', set()) and d not in s.get('special_vacation_dates', set()) and d not in s.get('preferred_off_dates', set()):
+                    vac_set = s.get('vacation_dates', set()) | s.get('special_vacation_dates', set()) | s.get('preferred_off_dates', set()) | s.get('specified_off_dates', set())
+                    if d not in vac_set:
                         part_schedule_dict[(s['name'], d)] = 1
                     else:
                         part_schedule_dict[(s['name'], d)] = 0
@@ -337,10 +352,11 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
         pattern = s.get('pattern', '')
         vac_count = sum(1 for d in all_dates if d in s.get('vacation_dates', set()))
         sp_vac_count = sum(1 for d in all_dates if d in s.get('special_vacation_dates', set()))
+        spec_off_count = sum(1 for d in all_dates if d in s.get('specified_off_dates', set()) and d.weekday() != 6 and d not in holidays_jp)
         
         if not s.get('is_core'):
             pref_w = s.get('pref_weekdays', [])
-            vac_set = s.get('vacation_dates', set()) | s.get('special_vacation_dates', set()) | s.get('preferred_off_dates', set())
+            vac_set = s.get('vacation_dates', set()) | s.get('special_vacation_dates', set()) | s.get('preferred_off_dates', set()) | s.get('specified_off_dates', set())
             target_days = sum(1 for d in all_dates if d.weekday() in pref_w and d.weekday() != 6 and d not in holidays_jp and d not in vac_set)
         else:
             basic_slots = cal_days - (sundays + holidays_in_month)
@@ -351,7 +367,8 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
             else:
                 off_days = wd_counts[5]
             
-            target_days = max(0, basic_slots - off_days - vac_count - sp_vac_count)
+            effective_off_days = max(off_days, spec_off_count)
+            target_days = max(0, basic_slots - effective_off_days - vac_count - sp_vac_count)
 
         target_days_dict[name] = target_days
         sec = s.get('section', '不明')
@@ -432,7 +449,7 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
                 model.Add(x[(name, d)] == part_schedule_dict[(name, d)])
         else:
             for d in all_dates:
-                if d.weekday() == 6 or d in holidays_jp or d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('preferred_off_dates', set()):
+                if d.weekday() == 6 or d in holidays_jp or d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('preferred_off_dates', set()) or d in s.get('specified_off_dates', set()):
                     model.Add(x[(name, d)] == 0)
 
             month_sum_var = sum(x[(name, d)] for d in all_dates)
@@ -456,8 +473,15 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
                 for w in range(6):
                     if w not in s.get('basic_off_days', []):
                         model.Add(y_mo[(name, w)] == 0)
+                
+                # 指定公休日がある週（ISO週）を特定
+                spec_off_iso_weeks = {d.isocalendar()[:2] for d in s.get('specified_off_dates', set()) if d.weekday() != 6 and d not in holidays_jp}
+                
                 for d in all_dates:
                     if d.weekday() < 6:
+                        # 同じ週に指定公休日がある場合、指定公休日がその週の公休となるため、主公休曜日の強制休み義務を免除（振替出勤を許容して総出勤日数を維持）
+                        if d.isocalendar()[:2] in spec_off_iso_weeks:
+                            continue
                         model.AddImplication(y_mo[(name, d.weekday())], x[(name, d)].Not())
 
                 if is_special:
@@ -553,19 +577,25 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
                 
                 # 【2階裏特例】ハードコーディング絶対3名
                 if sec == "2階裏":
-                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
+                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (
+                        d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('specified_off_dates', set())
+                    ))
                     eff_min_cap = max(1, 3 - vac_in_sec) 
                     max_cap = int(math.ceil(M_s)) + 1 
                 elif sec == "1階":
-                    # 1階はパートも含めた全スタッフの有休を考慮
-                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
+                    # 1階はパートも含めた全スタッフの有休・特休・指定公休を考慮
+                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and (
+                        d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('specified_off_dates', set())
+                    ))
                     min_cap = max(1, int(math.floor(M_s)) - 1)
                     max_cap = int(math.ceil(M_s)) + 1
                     eff_min_cap = max(1, min_cap - vac_in_sec)
                 else:
                     min_cap = max(1, int(math.floor(M_s)) - 1)
                     max_cap = int(math.ceil(M_s)) + 1
-                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
+                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (
+                        d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('specified_off_dates', set())
+                    ))
                     eff_min_cap = max(1, min_cap - vac_in_sec)
                 
                 if stage == 1:
