@@ -221,5 +221,16 @@ def render_monthly_sheet(
         apply_cell_style(ws.cell(row=sum_rows[2], column=c_idx), f'=COUNTIF({c_let}3:{c_let}{end_row}, "公")', font=f_sum, alignment=align_c, border=border_thin)
         
         m_off = best_y.get(s['name'], -1)
-        val = wd_str[m_off] if m_off >= 0 else "-"
+        has_rot_2nd = (
+            cfg.auto_rotate_off_rule
+            and s.get('is_core', False)
+            and ('週4' in s.get('pattern', ''))
+            and s.get('basic_off_type') == 'AND'
+            and len(s.get('basic_off_days', [])) == 1
+        )
+        if has_rot_2nd and m_off >= 0:
+            fixed_w = s['basic_off_days'][0]
+            val = f"{wd_str[fixed_w]}・{wd_str[m_off]}" if fixed_w != m_off else wd_str[fixed_w]
+        else:
+            val = wd_str[m_off] if m_off >= 0 else "-"
         apply_cell_style(ws.cell(row=sum_rows[3], column=c_idx), val, font=f_sum, alignment=align_c, border=border_thin)

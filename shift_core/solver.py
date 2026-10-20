@@ -217,6 +217,14 @@ def solve_monthly_shift(
 
             month_sum_var = sum(x[(name, d)] for d in all_dates)
 
+            has_rotating_second_off = (
+                cfg.auto_rotate_off_rule
+                and s.get('is_core', False)
+                and ('週4' in pattern)
+                and s.get('basic_off_type') == 'AND'
+                and len(s.get('basic_off_days', [])) == 1
+            )
+
             if s.get('basic_off_type') == 'AND':
                 for d in all_dates:
                     if d.weekday() in s.get('basic_off_days', []) and d not in holidays_jp:
@@ -229,6 +237,23 @@ def solve_monthly_shift(
                 shortage = model.NewIntVar(0, 31, f"shortage_{name}")
                 model.Add(shortage == target_days - month_sum_var)
                 penalties.append(shortage * WEIGHT_FIXED_OFF_SHORTAGE)
+
+                # 【週4日勤務かつ固定公休1日指定者（宮澤など）の第2公休曜日月内固定＆月替わりローテーション】
+                if has_rotating_second_off:
+                    sub_off_candidates = [w for w in [0, 1, 2, 3, 4] if w not in s.get('basic_off_days', [])]
+                    for w in range(6):
+                        if w not in sub_off_candidates:
+                            model.Add(y_mo[(name, w)] == 0)
+                    if sub_off_candidates:
+                        model.AddExactlyOne([y_mo[(name, w)] for w in sub_off_candidates])
+
+                    if not is_special:
+                        spec_off_iso_weeks = {d.isocalendar()[:2] for d in s.get('specified_off_dates', set()) if d.weekday() != 6 and d not in holidays_jp}
+                        for d in all_dates:
+                            if d.weekday() in sub_off_candidates and d not in holidays_jp:
+                                if d.isocalendar()[:2] in spec_off_iso_weeks:
+                                    continue
+                                model.AddImplication(y_mo[(name, d.weekday())], x[(name, d)].Not())
                 
             elif s.get('basic_off_type') == 'OR':
                 for w in range(6):
@@ -278,10 +303,17 @@ def solve_monthly_shift(
                     model.Add(x[(name, d1)] + x[(name, d2)] + x[(name, d3)] > 0).OnlyEnforceIf(off3_var.Not())
                     penalties.append(off3_var * cfg.weight_off_3consec)
 
-            if s.get('basic_off_type') == 'OR':
+            if s.get('basic_off_type') == 'OR' or has_rotating_second_off:
+                rot_candidates = (
+                    [w for w in [0, 1, 2, 3, 4] if w not in s.get('basic_off_days', [])]
+                    if has_rotating_second_off
+                    else s.get('basic_off_days', [])
+                )
                 for d in all_dates:
                     if d.weekday() != 6 and d not in holidays_jp:
                         if d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('specified_off_dates', set()):
+                            continue
+                        if has_rotating_second_off and d.weekday() in s.get('basic_off_days', []):
                             continue
                         is_off = model.NewBoolVar(f"is_off_{name}_{d}")
                         model.Add(x[(name, d)] == 0).OnlyEnforceIf(is_off)
@@ -292,9 +324,17 @@ def solve_monthly_shift(
                         penalties.append(mismatch * WEIGHT_MAIN_OFF_MISMATCH)
 
                 if name in prev_month_main_offs:
-                    prev_w = prev_month_main_offs[name]
-                    if prev_w in s.get('basic_off_days', []):
-                        penalties.append(y_mo[(name, prev_w)] * WEIGHT_PREV_OFF_REPEAT)
+                    prev_val = prev_month_main_offs[name]
+                    prev_list = prev_val if isinstance(prev_val, list) else [prev_val]
+                    # 直近月の主公休曜日ほど強く回避し、複数月にわたる巡回ローテーションを促進
+                    rot_weights = (
+                        [12000000, 6000000, 3000000]
+                        if has_rotating_second_off
+                        else [WEIGHT_PREV_OFF_REPEAT * 4, WEIGHT_PREV_OFF_REPEAT * 2, WEIGHT_PREV_OFF_REPEAT]
+                    )
+                    for idx_p, prev_w in enumerate(prev_list[:3]):
+                        if prev_w in rot_candidates:
+                            penalties.append(y_mo[(name, prev_w)] * rot_weights[idx_p])
 
             # 【ローリングウィンドウ化（勤務パターン適応型）】
             if cfg.weekly_off_balance_rule and '週4' in pattern:
@@ -302,10 +342,7 @@ def solve_monthly_shift(
             else:
                 target_off = cfg.weekly_off_target
 
-            prev_tail_7 = prev_month_tail_shifts.get(name, [])
-            if len(prev_tail_7) < 6:
-                prev_tail_7 = [0] * (6 - len(prev_tail_7)) + prev_tail_7
-            hist_vars = prev_tail_7 + [x[(name, d)] for d in all_dates]
+            hist_vars = [x[(name, d)] for d in all_dates]
             
             for i in range(len(hist_vars) - 6):
                 window = hist_vars[i:i+7]
@@ -570,7 +607,14 @@ def solve_monthly_shift(
         main_off_dict = {}
         for s in staff_list:
             if s.get('is_core'):
-                if s.get('basic_off_type') == 'OR':
+                pat_s = s.get('pattern', '')
+                has_rot_2nd = (
+                    cfg.auto_rotate_off_rule
+                    and ('週4' in pat_s)
+                    and s.get('basic_off_type') == 'AND'
+                    and len(s.get('basic_off_days', [])) == 1
+                )
+                if s.get('basic_off_type') == 'OR' or has_rot_2nd:
                     for w in range(6):
                         if solver.Value(y_mo[(s['name'], w)]) == 1:
                             main_off_dict[s['name']] = w

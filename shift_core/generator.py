@@ -104,7 +104,10 @@ class ShiftGeneratorService:
 
         # 前月実績データの初期化（第4シートから読み込んだ実績、または空）
         prev_tail_shifts = init_tail_shifts
-        prev_main_offs = init_main_offs
+        prev_main_offs: Dict[str, List[int]] = {
+            k: ([v] if isinstance(v, int) else list(v))
+            for k, v in (init_main_offs or {}).items()
+        }
 
         if prev_tail_shifts:
             self.log(f"★ 前月実績シートから {len(prev_tail_shifts)} 名の実績データを最初の対象月に連動させます。")
@@ -166,9 +169,13 @@ class ShiftGeneratorService:
             ws = wb_out.create_sheet()
             if best_x is not None:
                 self.log(f"【成功】{month_label}のシフトが生成されました。")
-                # 次の月へ末尾実績と主公休を引き継ぐ（月跨ぎ連動）
+                # 次の月へ末尾実績と主公休履歴を引き継ぐ（月跨ぎ連動）
                 prev_tail_shifts = new_tail
-                prev_main_offs = best_y
+                if best_y:
+                    for s_name, w_val in best_y.items():
+                        if w_val is not None and w_val >= 0:
+                            hist_list = list(prev_main_offs.get(s_name, []))
+                            prev_main_offs[s_name] = [w_val] + hist_list
                 render_monthly_sheet(ws, best_x, best_y, monthly_data, t_days)
                 month_results.append(MonthResult(
                     year=t_year,

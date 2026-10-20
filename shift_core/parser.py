@@ -396,6 +396,10 @@ def parse_previous_month_sheet(ws) -> Tuple[Dict[str, List[int]], Dict[str, int]
                         v = str(row[c_idx]).strip()
                         if v in wd_map:
                             main_offs[s_name] = wd_map[v]
+                        else:
+                            w_chars = [wd_map[ch] for ch in v if ch in wd_map]
+                            if w_chars:
+                                main_offs[s_name] = w_chars[-1]
                 continue
 
             if d_val is not None:
