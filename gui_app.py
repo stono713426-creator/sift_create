@@ -22,7 +22,7 @@ class ShiftGeneratorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("勤務シフト自動生成システム v1.8")
+        self.title("勤務シフト自動生成システム v1.9")
         self.geometry("880x720")
         self.minsize(780, 600)
 
@@ -51,7 +51,7 @@ class ShiftGeneratorApp(ctk.CTk):
 
         title_lbl = ctk.CTkLabel(
             header_frame,
-            text="🏥 勤務シフト自動生成システム v1.8",
+            text="🏥 勤務シフト自動生成システム v1.9",
             font=ctk.CTkFont(size=20, weight="bold")
         )
         title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")

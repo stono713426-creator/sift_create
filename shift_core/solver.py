@@ -186,7 +186,7 @@ def solve_monthly_shift(
             for d in all_dates:
                 if (sname, d) in existing_shift_dict:
                     prev_val = existing_shift_dict[(sname, d)]
-                    if d in s['vacation_dates'] or d in s['special_vacation_dates']: continue
+                    if d in s['vacation_dates'] or d in s['special_vacation_dates'] or d in s.get('specified_off_dates', set()): continue
                     diff_var = model.NewBoolVar(f"shift_change_{sname}_{d}")
                     if prev_val == 1:
                         model.Add(x[(sname, d)] == 0).OnlyEnforceIf(diff_var)
@@ -205,6 +205,7 @@ def solve_monthly_shift(
         basic_slots = cal_days - (sundays + holidays_in_month)
         vac_count = sum(1 for d in all_dates if d in s.get('vacation_dates', set()))
         sp_vac_count = sum(1 for d in all_dates if d in s.get('special_vacation_dates', set()))
+        spec_off_count = sum(1 for d in all_dates if d in s.get('specified_off_dates', set()) and d.weekday() != 6 and d not in holidays_jp)
         
         if not s.get('is_core'):
             for d in all_dates:
@@ -223,7 +224,7 @@ def solve_monthly_shift(
                 
                 # 【固定公休特例スラック化 ＆ シワ寄せ防止】
                 model.Add(month_sum_var <= target_days)
-                model.Add(month_sum_var >= max(0, target_days - cfg.fixed_off_shortage_allowance))
+                model.Add(month_sum_var >= max(0, target_days - cfg.fixed_off_shortage_allowance - spec_off_count))
                 
                 shortage = model.NewIntVar(0, 31, f"shortage_{name}")
                 model.Add(shortage == target_days - month_sum_var)
@@ -280,6 +281,8 @@ def solve_monthly_shift(
             if s.get('basic_off_type') == 'OR':
                 for d in all_dates:
                     if d.weekday() != 6 and d not in holidays_jp:
+                        if d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set()) or d in s.get('specified_off_dates', set()):
+                            continue
                         is_off = model.NewBoolVar(f"is_off_{name}_{d}")
                         model.Add(x[(name, d)] == 0).OnlyEnforceIf(is_off)
                         model.Add(x[(name, d)] == 1).OnlyEnforceIf(is_off.Not())

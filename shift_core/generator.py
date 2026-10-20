@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Callable, Any
 import openpyxl
 
-from .parser import load_and_parse_data
+from .parser import load_and_parse_data, parse_date_list
 from .solver import solve_monthly_shift
 from .renderer import render_monthly_sheet
 
@@ -123,6 +123,16 @@ class ShiftGeneratorService:
             self.log(f"  対象月処理開始: {month_label}")
             if prev_tail_shifts:
                 self.log(f"  -> 前月実績連動: {len(prev_tail_shifts)}名の直前勤務データを引き継ぎ中")
+            for s in staff_list:
+                v_d = sorted([d.strftime('%m/%d') for d in parse_date_list(s.get('raw_vacation'), t_year, holidays_jp_dict) if d.year == t_year and d.month == t_month])
+                sv_d = sorted([d.strftime('%m/%d') for d in parse_date_list(s.get('raw_special_vacation'), t_year, holidays_jp_dict) if d.year == t_year and d.month == t_month])
+                sp_off_d = sorted([d.strftime('%m/%d') for d in parse_date_list(s.get('raw_specified_off'), t_year, holidays_jp_dict) if d.year == t_year and d.month == t_month]) if config.specified_off_rule else []
+                if v_d or sv_d or sp_off_d:
+                    parts_log = []
+                    if v_d: parts_log.append(f"有休={','.join(v_d)}")
+                    if sv_d: parts_log.append(f"特有={','.join(sv_d)}")
+                    if sp_off_d: parts_log.append(f"指定公休={','.join(sp_off_d)}")
+                    self.log(f"  -> [{s['name']}] {' / '.join(parts_log)}")
             self.log(f"==========================================")
 
             ope_dict_month = {d: v for d, v in ope_dict_all.items() if d.year == t_year and d.month == t_month}

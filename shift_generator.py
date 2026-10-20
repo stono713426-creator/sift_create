@@ -20,6 +20,8 @@ import datetime
 import math
 import traceback
 import re
+import numbers
+import unicodedata
 from typing import Dict, List, Set, Tuple, Optional, Any
 from ortools.sat.python import cp_model
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -104,7 +106,7 @@ def parse_rule_target_dates(r_cond: str, all_dates: list, holidays_jp: set, ope_
 # 1. load_and_parse_data
 # =====================================================================
 def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: dict = None) -> Set[datetime.date]:
-    """日付文字列、Excelシリアル値(int/float)、datetime型等を堅牢にパースし、祝日・日曜の有休を除外"""
+    """日付文字列、Excelシリアル値(int/float/np.number)、datetime型等を堅牢にパースし、祝日・日曜の有休を除外"""
     if pd.isna(val_str) or val_str is None:
         return set()
     
@@ -115,18 +117,19 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
             return set()
         return {d_obj}
 
-    # 2. Excelシリアル値 (int または float) の場合 (例: 46342 -> 2026-11-16)
-    if isinstance(val_str, (int, float)):
+    # 2. Excelシリアル値 (int / float / numpy数値型) の場合 (例: 46342 -> 2026-11-16)
+    if isinstance(val_str, numbers.Number) and not isinstance(val_str, bool):
         try:
-            if 30000 <= val_str <= 60000:
-                d_obj = datetime.date(1899, 12, 30) + datetime.timedelta(days=int(val_str))
+            f_val = float(val_str)
+            if 30000 <= f_val <= 60000:
+                d_obj = datetime.date(1899, 12, 30) + datetime.timedelta(days=int(f_val))
                 if holidays_jp_dict and (d_obj.weekday() == 6 or d_obj in holidays_jp_dict):
                     return set()
                 return {d_obj}
         except Exception:
             pass
 
-    val_str = str(val_str).strip()
+    val_str = unicodedata.normalize('NFKC', str(val_str)).strip()
     if not val_str:
         return set()
 
@@ -145,7 +148,16 @@ def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: di
     res = set()
     # 時刻部分 (00:00:00 等) をトリム
     val_str = re.sub(r'\b\d{1,2}:\d{2}(:\d{2})?\b', '', val_str).strip()
-    parts = re.split(r'[,、;\n\r]+', val_str)
+    raw_parts = re.split(r'[,、;・\n\r]+', val_str)
+    parts = []
+    for rp in raw_parts:
+        rp = rp.strip()
+        if not rp:
+            continue
+        if ' ' in rp and not re.search(r'[-〜~]', rp):
+            parts.extend([p for p in rp.split() if p.strip()])
+        else:
+            parts.append(rp)
 
     def _parse_single_date(s: str) -> datetime.date:
         s = s.strip()
