@@ -170,64 +170,122 @@ def get_days_in_month(year: int, month: int) -> int:
     return (next_month - datetime.timedelta(days=1)).day
 
 def parse_date_list(val_str: Any, default_year: int = 2026, holidays_jp_dict: dict = None) -> Set[datetime.date]:
-    """日付文字列（期間ハイフン、カンマ区切り等）をパースし、祝日・日曜の有休を除外"""
-    if pd.isna(val_str) or not str(val_str).strip():
+    """日付文字列、Excelシリアル値(int/float)、datetime型等を堅牢にパースし、祝日・日曜の有休を除外"""
+    if pd.isna(val_str) or val_str is None:
         return set()
-    val_str = str(val_str).strip()
-    res = set()
     
-    def _normalize_date_str(s: str) -> str:
-        s = s.strip()
-        if not s: return s
-        if s.count('/') == 1:
-            return f"{default_year}/{s}"
-        elif '/' not in s:
-            return f"{default_year}/{s}"
-        return s
+    # 1. 既に datetime.date や datetime.datetime の場合
+    if isinstance(val_str, (datetime.date, datetime.datetime, pd.Timestamp)):
+        d_obj = val_str.date() if isinstance(val_str, (datetime.datetime, pd.Timestamp)) else val_str
+        if holidays_jp_dict and (d_obj.weekday() == 6 or d_obj in holidays_jp_dict):
+            return set()
+        return {d_obj}
 
-    for part in re.split(r'[,\n、\s]+', val_str):
+    # 2. Excelシリアル値 (int または float) の場合 (例: 46342 -> 2026-11-16)
+    if isinstance(val_str, (int, float)):
+        try:
+            if 30000 <= val_str <= 60000:
+                d_obj = datetime.date(1899, 12, 30) + datetime.timedelta(days=int(val_str))
+                if holidays_jp_dict and (d_obj.weekday() == 6 or d_obj in holidays_jp_dict):
+                    return set()
+                return {d_obj}
+        except Exception:
+            pass
+
+    val_str = str(val_str).strip()
+    if not val_str:
+        return set()
+
+    # 3. 文字列全体が5桁前後の数字（シリアル値文字列）の場合
+    if re.match(r'^\d{5}(\.0+)?$', val_str):
+        try:
+            num = int(float(val_str))
+            if 30000 <= num <= 60000:
+                d_obj = datetime.date(1899, 12, 30) + datetime.timedelta(days=num)
+                if holidays_jp_dict and (d_obj.weekday() == 6 or d_obj in holidays_jp_dict):
+                    return set()
+                return {d_obj}
+        except Exception:
+            pass
+
+    res = set()
+    # 時刻部分 (00:00:00 等) をトリム
+    val_str = re.sub(r'\b\d{1,2}:\d{2}(:\d{2})?\b', '', val_str).strip()
+    parts = re.split(r'[,、;\n\r]+', val_str)
+
+    def _parse_single_date(s: str) -> datetime.date:
+        s = s.strip()
+        if not s: return None
+        s = s.replace('年', '/').replace('月', '/').replace('日', '').replace('.', '/')
+
+        # 5桁シリアル値文字列の考慮
+        if re.match(r'^\d{5}$', s):
+            try:
+                num = int(s)
+                if 30000 <= num <= 60000:
+                    return datetime.date(1899, 12, 30) + datetime.timedelta(days=num)
+            except Exception: pass
+
+        m_short = re.match(r'^(\d{1,2})[-/](\d{1,2})$', s)
+        if m_short:
+            m, d = int(m_short.group(1)), int(m_short.group(2))
+            try: return datetime.date(default_year, m, d)
+            except Exception: return None
+            
+        m_full = re.match(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$', s)
+        if m_full:
+            y, m, d = int(m_full.group(1)), int(m_full.group(2)), int(m_full.group(3))
+            try: return datetime.date(y, m, d)
+            except Exception: return None
+            
+        try:
+            dt = pd.to_datetime(s, errors='coerce')
+            if pd.notna(dt):
+                return dt.date()
+        except Exception:
+            pass
+        return None
+
+    for part in parts:
         part = part.strip()
         if not part: continue
         
-        separator = None
-        if '-' in part: separator = '-'
-        elif '〜' in part: separator = '〜'
-        elif '~' in part: separator = '~'
+        range_match = None
+        m_full_range = re.match(r'^(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s*[-〜~]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})$', part)
+        m_short_range = re.match(r'^(\d{1,2}[-/]\d{1,2})\s*[-〜~]\s*(\d{1,2}[-/]\d{1,2})$', part)
         
-        if separator and len(part.split(separator)) == 2:
-            sp = part.split(separator)
-            try:
-                s_str = _normalize_date_str(sp[0])
-                e_str = _normalize_date_str(sp[1])
-                start_dt = pd.to_datetime(s_str, errors='coerce')
-                end_dt = pd.to_datetime(e_str, errors='coerce')
-                if pd.notna(start_dt) and pd.notna(end_dt):
-                    cur = start_dt
-                    while cur <= end_dt:
-                        d_obj = cur.date()
-                        # 【祝日・日曜の有休除外】
-                        if holidays_jp_dict:
-                            if d_obj.weekday() != 6 and d_obj not in holidays_jp_dict:
-                                res.add(d_obj)
-                        else:
-                            res.add(d_obj)
-                        cur += datetime.timedelta(days=1)
+        if m_full_range:
+            range_match = (m_full_range.group(1), m_full_range.group(2))
+        elif m_short_range:
+            range_match = (m_short_range.group(1), m_short_range.group(2))
+        elif '〜' in part:
+            sp = part.split('〜')
+            if len(sp) == 2: range_match = (sp[0], sp[1])
+        elif '~' in part:
+            sp = part.split('~')
+            if len(sp) == 2: range_match = (sp[0], sp[1])
+        elif ' - ' in part:
+            sp = part.split(' - ')
+            if len(sp) == 2: range_match = (sp[0], sp[1])
+
+        if range_match:
+            d_start = _parse_single_date(range_match[0])
+            d_end = _parse_single_date(range_match[1])
+            if d_start and d_end:
+                if d_start > d_end:
+                    d_start, d_end = d_end, d_start
+                cur = d_start
+                while cur <= d_end:
+                    if not (holidays_jp_dict and (cur.weekday() == 6 or cur in holidays_jp_dict)):
+                        res.add(cur)
+                    cur += datetime.timedelta(days=1)
                 continue
-            except Exception:
-                pass
-        
-        try:
-            d_str = _normalize_date_str(part)
-            dt = pd.to_datetime(d_str, errors='coerce')
-            if pd.notna(dt):
-                d_obj = dt.date()
-                if holidays_jp_dict:
-                    if d_obj.weekday() != 6 and d_obj not in holidays_jp_dict:
-                        res.add(d_obj)
-                else:
-                    res.add(d_obj)
-        except Exception:
-            pass
+                
+        d_single = _parse_single_date(part)
+        if d_single:
+            if not (holidays_jp_dict and (d_single.weekday() == 6 or d_single in holidays_jp_dict)):
+                res.add(d_single)
+                
     return res
 
 def parse_rule_target_dates(r_cond: str, all_dates: list, holidays_jp: set, ope_dict: dict) -> list:
