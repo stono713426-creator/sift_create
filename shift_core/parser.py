@@ -111,7 +111,41 @@ def parse_settings_sheet(wb_in: openpyxl.Workbook) -> ShiftConfig:
                 try: config.warn_2f_back_count = int(float(raw_settings[k]))
                 except: pass
 
+        # 11. 祝日週の最低1日公休設定 (v1.5)
+        for k in ['祝日週_公休設定', '祝日週公休設定', '祝日週_最低1日公休', '祝日週_固定公休振替', '祝日週固定公休振替', '固定公休振替', '祝日週振替公休']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['無効', 'オフ', 'False', 'false', '0', 'しない', 'なし']:
+                    config.holiday_week_off_rule = False
+                elif val in ['有効', 'オン', 'True', 'true', '1', 'する', 'あり']:
+                    config.holiday_week_off_rule = True
+
+        # 12. 週単位の公休平準化 (v1.6)
+        for k in ['週単位_公休平準化', '週単位公休平準化', '週休平準化', '週単位_週休平準化']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['無効', 'オフ', 'False', 'false', '0', 'しない', 'なし']:
+                    config.weekly_off_balance_rule = False
+                elif val in ['有効', 'オン', 'True', 'true', '1', 'する', 'あり']:
+                    config.weekly_off_balance_rule = True
+
+        # 13. 2階裏 通常週の4名最低日数 (v1.6)
+        for k in ['2階裏_週4名最低日数', '2階裏週4名最低日数', '2階裏_通常週4名最低日数', '2階裏_週4名日数']:
+            if k in raw_settings:
+                try: config.sec_2f_back_weekly_4_min = int(float(raw_settings[k]))
+                except: pass
+
+        # 14. 空欄スタッフの公休固定＆ローテーション (v1.6改善 / v1.7)
+        for k in ['空欄スタッフ_公休固定ローテーション', '空欄スタッフ_公休ローテーション', '空欄公休ローテーション', '公休曜日固定ローテーション', '公休ローテーション', '空欄公休固定']:
+            if k in raw_settings:
+                val = str(raw_settings[k]).strip()
+                if val in ['無効', 'オフ', 'False', 'false', '0', 'しない', 'なし']:
+                    config.auto_rotate_off_rule = False
+                elif val in ['有効', 'オン', 'True', 'true', '1', 'する', 'あり']:
+                    config.auto_rotate_off_rule = True
+
         print(f"★ 『{target_sheet_name}』シートから動的パラメータを正常に読み込みました。")
+
 
     except Exception as e:
         print(f"警告: 設定シートのパース中にエラーが発生しました（初期値を使用します）: {e}")
@@ -402,17 +436,13 @@ def load_and_parse_data(filepath: str) -> tuple:
         if pd.notna(row['日付_dt']):
             ope_dict_all[row['日付_dt']] = str(row.get(col_type, '')).strip()
 
-    target_months = set()
+    all_months = set()
     tgt_col = next((c for c in df_ope.columns if c and '作成対象' in str(c)), None)
     for _, row in df_ope.iterrows():
         if pd.notna(row['日付_dt']):
-            is_tgt = True
-            if tgt_col and row.get(tgt_col) not in ['○', 1, True, "1"]:
-                is_tgt = False
-            if is_tgt:
-                target_months.add((row['日付_dt'].year, row['日付_dt'].month))
+            all_months.add((row['日付_dt'].year, row['日付_dt'].month))
                 
-    target_months = sorted(list(target_months))
+    target_months = sorted(list(all_months))
 
     # シート4: 前月シフト実績（存在する場合）
     prev_month_tail_shifts = {}
@@ -427,8 +457,19 @@ def load_and_parse_data(filepath: str) -> tuple:
     # 設定シートの読み込み
     config = parse_settings_sheet(wb_in)
 
+    # 空欄スタッフへの公休曜日月内固定＆ローテーションルールの適用 (v1.6改善 / v1.7)
+    if config.auto_rotate_off_rule:
+        for s in staff_list:
+            if s.get('is_core') and s.get('pattern') != '除外' and not s.get('is_part_1f'):
+                if not s.get('basic_off_days'):
+                    # 希望公休曜日が空欄のスタッフに平日(月〜金)の主公休ローテーションルールを適用
+                    s['basic_off_days'] = [0, 1, 2, 3, 4]
+                    s['basic_off_type'] = 'OR'
+                    s['is_auto_rotated_off'] = True
+
     wb_in.close()
     return staff_list, df_rules, ope_dict_all, target_months, holidays_jp_dict, prev_month_tail_shifts, prev_month_main_offs, config
+
 
 def inspect_excel_file(filepath: str) -> dict:
     """
@@ -468,15 +509,17 @@ def inspect_excel_file(filepath: str) -> dict:
                 if '日付' in df_ope.columns:
                     df_ope['日付_dt'] = pd.to_datetime(df_ope['日付'], errors='coerce').dt.date
                     tgt_col = next((c for c in df_ope.columns if c and '作成対象' in str(c)), None)
-                    t_months = set()
+                    all_months = set()
+                    marked_months = set()
                     for _, row in df_ope.iterrows():
                         if pd.notna(row['日付_dt']):
-                            is_tgt = True
-                            if tgt_col and row.get(tgt_col) not in ['○', 1, True, "1"]:
-                                is_tgt = False
-                            if is_tgt:
-                                t_months.add((row['日付_dt'].year, row['日付_dt'].month))
-                    info['target_months'] = sorted(list(t_months))
+                            y = row['日付_dt'].year
+                            m = row['日付_dt'].month
+                            all_months.add((y, m))
+                            if tgt_col and row.get(tgt_col) in ['○', 1, True, "1"]:
+                                marked_months.add((y, m))
+                    info['target_months'] = sorted(list(all_months))
+                    info['marked_months'] = sorted(list(marked_months))
 
         # 前月実績
         for s in wb.sheetnames:

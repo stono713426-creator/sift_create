@@ -1,19 +1,31 @@
-# Python関連（仮想環境やキャッシュ）
+# Python関連
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
 env/
 
-# Node.js関連（ライブラリ）
+# ビルド成果物・中間ファイル（展開バイナリは除外）
+build/
+dist/
+*.spec.bak
+
+# Node.js
 node_modules/
 
 # 秘密情報・環境変数
 .env
 *.local
 
-# OS・エディタの一時ファイル
+# OS・エディタ
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# 過去バージョンのZIP（最新v1.7のみ許容、他は無視）
+*v1.3*.zip
+*v1.5*.zip
+*v1.6*.zip
+勤務シフト生成システム_配布パッケージ.zip

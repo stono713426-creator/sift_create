@@ -56,6 +56,7 @@ WEIGHT_FIXED_OFF_SHORTAGE = 30000000  # 固定公休の不足防止（最重要�
 WEIGHT_2F_BACK_MIN_SLACK = 20000000    # 2階裏 人員不足スラック
 WEIGHT_GENERAL_SEC_SLACK = 10000000    # 一般セクション 人員不足・過剰スラック
 WEIGHT_NURSE_DEFICIT_SLACK = 15000000  # 2階裏 看護師不在スラック
+WEIGHT_SUBSTITUTE_OFF_SLACK = 8000000  # 祝日週の固定公休振替スラックペナルティ
 WEIGHT_2F_BACK_5_PENALTY = 2000000     # 2階裏 5名出勤ペナルティ
 WEIGHT_SEC_BALANCE_SQ = 500000         # セクション人数平準化（自乗）
 WEIGHT_SEC_BALANCE_ABS = 500000        # セクション人数平準化（絶対値）
@@ -64,8 +65,11 @@ WEIGHT_2F_BACK_3_PENALTY = 300000      # 2階裏 3名ペナルティ
 WEIGHT_NURSE_LT2_PENALTY = 200000      # 看護師2名未満ペナルティ
 WEIGHT_SPECIAL_EXTRA_WORK = 150000     # 週4(週5可)の超過勤務ペナルティ
 WEIGHT_ROLLING_WINDOW_DIFF = 80000     # 7日間ローリング週休平準化ペナルティ
-WEIGHT_PREV_OFF_REPEAT = 50000         # 前月主公休継続ペナルティ
+WEIGHT_WEEKLY_OFF_DIFF = 300000        # カレンダー週単位の公休日数平準化ペナルティ
+WEIGHT_2F_BACK_WEEKLY_4_SLACK = 5000000 # 2階裏 通常週4名不足スラックペナルティ
+WEIGHT_PREV_OFF_REPEAT = 300000        # 前月主公休継続ペナルティ (翌月ローテーション促進)
 WEIGHT_TAIL_OFF_SUM = 30000            # 月末公休偏りペナルティ
+
 
 # セクション定義
 SECTION_DEFINITIONS: List[Dict[str, Any]] = [
@@ -115,6 +119,23 @@ class ShiftConfig:
     existing_shift_weight_level: str = "中"
     # 10. 2階裏 警告表示人数 (N名以下で⚠️)
     warn_2f_back_count: int = 2
+    # 11. 祝日週の最低1日公休設定 (Trueなら祝日により診療日が5日となる週に最低1日公休を設定)
+    holiday_week_off_rule: bool = True
+    # 12. 週単位の公休平準化 (Trueなら週4勤務者は週2公休、週5勤務者は週1公休を基準に平準化)
+    weekly_off_balance_rule: bool = True
+    # 13. 2階裏 通常週の4名体制最低日数 (0なら無効、通常2または3日)
+    sec_2f_back_weekly_4_min: int = 2
+    # 14. 空欄スタッフの公休固定＆ローテーション (Trueなら希望公休が空欄のスタッフに平日主公休を設定し翌月ローテーション)
+    auto_rotate_off_rule: bool = True
+
+    @property
+    def substitute_holiday_off(self) -> bool:
+        """後方互換プロパティ"""
+        return self.holiday_week_off_rule
+
+    @substitute_holiday_off.setter
+    def substitute_holiday_off(self, val: bool):
+        self.holiday_week_off_rule = val
 
     @property
     def weight_off_3consec(self) -> int:
