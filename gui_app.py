@@ -22,7 +22,7 @@ class ShiftGeneratorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("勤務シフト自動生成システム")
+        self.title("勤務シフト自動生成システム v1.7")
         self.geometry("880x720")
         self.minsize(780, 600)
 
@@ -51,14 +51,14 @@ class ShiftGeneratorApp(ctk.CTk):
 
         title_lbl = ctk.CTkLabel(
             header_frame,
-            text="🏥 勤務シフト自動生成システム",
+            text="🏥 勤務シフト自動生成システム v1.7",
             font=ctk.CTkFont(size=20, weight="bold")
         )
         title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
 
         sub_lbl = ctk.CTkLabel(
             header_frame,
-            text="医療機関特有の制約・手術スケジュール・月またぎ実績を考慮した二段階最適化エンジン",
+            text="医療機関特有の制約・10段階優先度・月またぎ実績を考慮した二段階最適化エンジン",
             font=ctk.CTkFont(size=12),
             text_color="gray"
         )
@@ -99,6 +99,18 @@ class ShiftGeneratorApp(ctk.CTk):
 
         self.month_cb_container = ctk.CTkFrame(self.month_frame, fg_color="transparent")
         self.month_cb_container.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+
+        # 全選択・全解除ボタン
+        btn_sel_frame = ctk.CTkFrame(self.month_frame, fg_color="transparent")
+        btn_sel_frame.grid(row=0, column=2, padx=(5, 15), pady=10, sticky="e")
+        ctk.CTkButton(
+            btn_sel_frame, text="全選択", width=60, height=24, font=ctk.CTkFont(size=11),
+            fg_color="#3A3A3A", command=self._select_all_months
+        ).pack(side="left", padx=2)
+        ctk.CTkButton(
+            btn_sel_frame, text="全解除", width=60, height=24, font=ctk.CTkFont(size=11),
+            fg_color="#3A3A3A", command=self._deselect_all_months
+        ).pack(side="left", padx=2)
 
         # 4. 実行コントロール ＆ 進捗バー
         ctrl_frame = ctk.CTkFrame(self, corner_radius=10)
@@ -250,8 +262,16 @@ class ShiftGeneratorApp(ctk.CTk):
                 cb.pack(side="left", padx=8)
                 self.month_checkboxes[(y, m)] = var
         else:
-            lbl = ctk.CTkLabel(self.month_cb_container, text="※ 作成対象フラグ(○)の付いた月が見つかりません", text_color="orange")
+            lbl = ctk.CTkLabel(self.month_cb_container, text="※ 手術スケジュールシートに日付データが見つかりません", text_color="orange")
             lbl.pack(side="left")
+
+    def _select_all_months(self):
+        for var in self.month_checkboxes.values():
+            var.set(True)
+
+    def _deselect_all_months(self):
+        for var in self.month_checkboxes.values():
+            var.set(False)
 
     # ==========================
     # 実行制御

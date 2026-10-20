@@ -355,8 +355,11 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
 
         target_days_dict[name] = target_days
         sec = s.get('section', '不明')
-        # 平準化のための $M_s$ はコア要員のみ合算
-        if sec in sec_target_sum and s.get('is_core'):
+        # 平準化のための M_s: 1階はパートも含めた全体で合算、2階はコア要員のみ合算
+        if sec == "1階":
+            if sec in sec_target_sum:
+                sec_target_sum[sec] += target_days
+        elif sec in sec_target_sum and s.get('is_core'):
             sec_target_sum[sec] += target_days
 
     work_days = cal_days - sundays - holidays_in_month
@@ -545,11 +548,20 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
             if d.weekday() != 6 and d not in holidays_jp:
                 M_s = ideal_mean[sec]
                 
+                # 1階はパートも含めた全体人数(cnt_var)、2階はコア要員人数(core_cnt_var)を平準化対象とする
+                target_cnt_var = cnt_var if sec == "1階" else core_cnt_var
+                
                 # 【2階裏特例】ハードコーディング絶対3名
                 if sec == "2階裏":
                     vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
                     eff_min_cap = max(1, 3 - vac_in_sec) 
                     max_cap = int(math.ceil(M_s)) + 1 
+                elif sec == "1階":
+                    # 1階はパートも含めた全スタッフの有休を考慮
+                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
+                    min_cap = max(1, int(math.floor(M_s)) - 1)
+                    max_cap = int(math.ceil(M_s)) + 1
+                    eff_min_cap = max(1, min_cap - vac_in_sec)
                 else:
                     min_cap = max(1, int(math.floor(M_s)) - 1)
                     max_cap = int(math.ceil(M_s)) + 1
@@ -557,26 +569,33 @@ def solve_monthly_shift(target_year: int, target_month: int, monthly_data: dict,
                     eff_min_cap = max(1, min_cap - vac_in_sec)
                 
                 if stage == 1:
-                    model.Add(core_cnt_var >= eff_min_cap)
-                    model.Add(core_cnt_var <= max_cap)
+                    model.Add(target_cnt_var >= eff_min_cap)
+                    model.Add(target_cnt_var <= max_cap)
                 else:
                     slack_min = model.NewIntVar(0, 20, f"slack_min_sec_{sec}_{d}")
                     slack_max = model.NewIntVar(0, 20, f"slack_max_sec_{sec}_{d}")
-                    model.Add(core_cnt_var + slack_min >= eff_min_cap)
-                    model.Add(core_cnt_var - slack_max <= max_cap)
+                    model.Add(target_cnt_var + slack_min >= eff_min_cap)
+                    model.Add(target_cnt_var - slack_max <= max_cap)
                     weight_min = 20000000 if sec == "2階裏" else 10000000
                     penalties.append(slack_min * weight_min)
                     penalties.append(slack_max * 10000000)
 
                 sec_cnt_sq = model.NewIntVar(0, 400, f"sec_cnt_sq_{sec}_{d.strftime('%Y%m%d')}")
-                model.AddMultiplicationEquality(sec_cnt_sq, [core_cnt_var, core_cnt_var])
+                model.AddMultiplicationEquality(sec_cnt_sq, [target_cnt_var, target_cnt_var])
                 penalties.append(sec_cnt_sq * 500000)
                 
                 diff = model.NewIntVar(-100, 100, f"diff_{sec}_{d}")
                 abs_diff = model.NewIntVar(0, 100, f"abs_diff_{sec}_{d}")
-                model.Add(diff == core_cnt_var - int(M_s))
+                model.Add(diff == target_cnt_var - int(round(M_s)))
                 model.AddAbsEquality(abs_diff, diff)
                 penalties.append(abs_diff * 500000)
+
+                # 【1階特例】平均目標人数が6.5名以上の場合、できるだけ6名以下を避けるペナルティ
+                if sec == "1階" and M_s >= 6.5:
+                    is_under_7 = model.NewBoolVar(f"is_under_7_{d.strftime('%Y%m%d')}")
+                    model.Add(target_cnt_var <= 6).OnlyEnforceIf(is_under_7)
+                    model.Add(target_cnt_var >= 7).OnlyEnforceIf(is_under_7.Not())
+                    penalties.append(is_under_7 * 1500000)
 
         if d.weekday() != 6 and d not in holidays_jp:
             c2b = sec_cnt[("2階裏", d)] 

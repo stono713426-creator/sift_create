@@ -17,6 +17,7 @@ from .config import (
     WEIGHT_2F_BACK_MIN_SLACK,
     WEIGHT_GENERAL_SEC_SLACK,
     WEIGHT_NURSE_DEFICIT_SLACK,
+    WEIGHT_SUBSTITUTE_OFF_SLACK,
     WEIGHT_2F_BACK_5_PENALTY,
     WEIGHT_SEC_BALANCE_SQ,
     WEIGHT_SEC_BALANCE_ABS,
@@ -25,6 +26,8 @@ from .config import (
     WEIGHT_NURSE_LT2_PENALTY,
     WEIGHT_SPECIAL_EXTRA_WORK,
     WEIGHT_ROLLING_WINDOW_DIFF,
+    WEIGHT_WEEKLY_OFF_DIFF,
+    WEIGHT_2F_BACK_WEEKLY_4_SLACK,
     WEIGHT_PREV_OFF_REPEAT,
     WEIGHT_TAIL_OFF_SUM,
     SOLVER_MAX_TIME_SECONDS,
@@ -117,12 +120,24 @@ def solve_monthly_shift(
 
         target_days_dict[name] = target_days
         sec = s.get('section', '不明')
-        # 平準化のための M_s はコア要員のみ合算
-        if sec in sec_target_sum and s.get('is_core'):
+        # 平準化のための M_s: 1階はパートも含めた全体で合算、2階はコア要員のみ合算
+        if sec == "1階":
+            if sec in sec_target_sum:
+                sec_target_sum[sec] += target_days
+        elif sec in sec_target_sum and s.get('is_core'):
             sec_target_sum[sec] += target_days
 
     work_days = cal_days - sundays - holidays_in_month
     ideal_mean = {sec: (t_sum / work_days if work_days > 0 else 0) for sec, t_sum in sec_target_sum.items()}
+
+    # カレンダー週（ISO週）のグループ化
+    weeks = {}
+    for d in all_dates:
+        iso_year, iso_week, _ = d.isocalendar()
+        w_key = (iso_year, iso_week)
+        if w_key not in weeks:
+            weeks[w_key] = []
+        weeks[w_key].append(d)
 
     model = cp_model.CpModel()
     penalties = []
@@ -267,7 +282,12 @@ def solve_monthly_shift(
                     if prev_w in s.get('basic_off_days', []):
                         penalties.append(y_mo[(name, prev_w)] * WEIGHT_PREV_OFF_REPEAT)
 
-            # 【ローリングウィンドウ化】
+            # 【ローリングウィンドウ化（勤務パターン適応型）】
+            if cfg.weekly_off_balance_rule and '週4' in pattern:
+                target_off = 3
+            else:
+                target_off = cfg.weekly_off_target
+
             prev_tail_7 = prev_month_tail_shifts.get(name, [])
             if len(prev_tail_7) < 6:
                 prev_tail_7 = [0] * (6 - len(prev_tail_7)) + prev_tail_7
@@ -278,13 +298,63 @@ def solve_monthly_shift(
                 off_sum = sum(1 - v for v in window)
                 diff = model.NewIntVar(-7, 7, f"w_diff_{name}_{i}")
                 abs_diff = model.NewIntVar(0, 7, f"w_abs_diff_{name}_{i}")
-                model.Add(diff == off_sum - cfg.weekly_off_target)
+                model.Add(diff == off_sum - target_off)
                 model.AddAbsEquality(abs_diff, diff)
                 penalties.append(abs_diff * WEIGHT_ROLLING_WINDOW_DIFF)
 
             tail_dates = all_dates[-3:]
             tail_off_sum = sum(1 - x[(name, d)] for d in tail_dates)
             penalties.append(tail_off_sum * WEIGHT_TAIL_OFF_SUM)
+
+            # 【カレンダー週単位の公休平準化ペナルティ (v1.6)】
+            if cfg.weekly_off_balance_rule:
+                for w_key, week_dates in weeks.items():
+                    week_work_dates = [d for d in week_dates if d.weekday() != 6 and d not in holidays_jp]
+                    if len(week_work_dates) >= 5: # 通常週(6日) または 祝日週(5日)
+                        w_off_sum = sum(1 - x[(name, d)] for d in week_work_dates)
+                        # 週4日勤務者: 通常週(6日)なら公休目標2日、祝日週(5日)なら公休目標1日
+                        # 週5日勤務者: 通常週(6日)なら公休目標1日、祝日週(5日)なら公休目標1日
+                        if '週4' in pattern:
+                            expected_off = 2 if len(week_work_dates) == 6 else 1
+                        else:
+                            expected_off = 1
+                        
+                        w_diff = model.NewIntVar(-6, 6, f"wk_off_diff_{name}_{w_key[0]}_{w_key[1]}")
+                        w_abs_diff = model.NewIntVar(0, 6, f"wk_off_abs_{name}_{w_key[0]}_{w_key[1]}")
+                        model.Add(w_diff == w_off_sum - expected_off)
+                        model.AddAbsEquality(w_abs_diff, w_diff)
+                        penalties.append(w_abs_diff * WEIGHT_WEEKLY_OFF_DIFF)
+
+    # 【祝日週の最低1日公休制約 (v1.5)】
+    # 祝日により週内勤務可能日数（月〜土の診療日）が5日となる週において、
+    # 週5日勤務・週4日勤務を問わず、コアスタッフ全員に最低1日は公休日を設定（出勤日数を最大4日に制限）。
+    # これにより、祝日週に5連勤となることを防ぎ、セクション人数平準化ペナルティにより
+    # 最も余剰のある平日に自動的に公休（固定公休者の振替公休を含む）が設定される。
+    if cfg.holiday_week_off_rule:
+        for w_key, week_dates in weeks.items():
+            # 週内の診療日 (月〜土 かつ 祝日以外)
+            week_work_days = [d for d in week_dates if d.weekday() != 6 and d not in holidays_jp]
+            
+            # 週内に祝日があり、かつ診療日が5日以上ある週
+            has_holiday_in_week = any(d in holidays_jp for d in week_dates)
+            if has_holiday_in_week and len(week_work_days) >= 5:
+                max_work = len(week_work_days) - 1  # 診療日5日なら最大4日出勤 (最低1日公休)
+
+                for s in staff_list:
+                    if not s.get('is_core'):
+                        continue
+                    if s.get('pattern') == '除外':
+                        continue
+
+                    name = s['name']
+                    week_work_sum = sum(x[(name, d)] for d in week_work_days)
+
+                    if stage == 1:
+                        model.Add(week_work_sum <= max_work)
+                    else:
+                        slack = model.NewIntVar(0, len(week_work_days), f"sub_slack_{name}_{w_key[0]}_{w_key[1]}")
+                        model.Add(week_work_sum - slack <= max_work)
+                        penalties.append(slack * WEIGHT_SUBSTITUTE_OFF_SLACK)
 
     sec_cnt = {}
     sec_core_cnt_vars = {} 
@@ -308,11 +378,20 @@ def solve_monthly_shift(
             if d.weekday() != 6 and d not in holidays_jp:
                 M_s = ideal_mean[sec]
                 
+                # 1階はパートも含めた全体人数(cnt_var)、2階はコア要員人数(core_cnt_var)を平準化対象とする
+                target_cnt_var = cnt_var if sec == "1階" else core_cnt_var
+                
                 # 【2階裏特例】動的パラメータ (デフォルト3名)
                 if sec == "2階裏":
                     vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and s['is_core'] and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
                     eff_min_cap = max(1, cfg.sec_2f_back_base_cap - vac_in_sec) 
                     max_cap = int(math.ceil(M_s)) + cfg.sec_capacity_tolerance
+                elif sec == "1階":
+                    # 1階はパートも含めた全スタッフの有休を考慮
+                    vac_in_sec = sum(1 for s in staff_list if s['section'] == sec and (d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())))
+                    min_cap = max(1, int(math.floor(M_s)) - cfg.sec_capacity_tolerance)
+                    max_cap = int(math.ceil(M_s)) + cfg.sec_capacity_tolerance
+                    eff_min_cap = max(1, min_cap - vac_in_sec)
                 else:
                     min_cap = max(1, int(math.floor(M_s)) - cfg.sec_capacity_tolerance)
                     max_cap = int(math.ceil(M_s)) + cfg.sec_capacity_tolerance
@@ -320,26 +399,33 @@ def solve_monthly_shift(
                     eff_min_cap = max(1, min_cap - vac_in_sec)
                 
                 if stage == 1:
-                    model.Add(core_cnt_var >= eff_min_cap)
-                    model.Add(core_cnt_var <= max_cap)
+                    model.Add(target_cnt_var >= eff_min_cap)
+                    model.Add(target_cnt_var <= max_cap)
                 else:
                     slack_min = model.NewIntVar(0, 20, f"slack_min_sec_{sec}_{d}")
                     slack_max = model.NewIntVar(0, 20, f"slack_max_sec_{sec}_{d}")
-                    model.Add(core_cnt_var + slack_min >= eff_min_cap)
-                    model.Add(core_cnt_var - slack_max <= max_cap)
+                    model.Add(target_cnt_var + slack_min >= eff_min_cap)
+                    model.Add(target_cnt_var - slack_max <= max_cap)
                     weight_min = WEIGHT_2F_BACK_MIN_SLACK if sec == "2階裏" else WEIGHT_GENERAL_SEC_SLACK
                     penalties.append(slack_min * weight_min)
                     penalties.append(slack_max * WEIGHT_GENERAL_SEC_SLACK)
 
                 sec_cnt_sq = model.NewIntVar(0, 400, f"sec_cnt_sq_{sec}_{d.strftime('%Y%m%d')}")
-                model.AddMultiplicationEquality(sec_cnt_sq, [core_cnt_var, core_cnt_var])
+                model.AddMultiplicationEquality(sec_cnt_sq, [target_cnt_var, target_cnt_var])
                 penalties.append(sec_cnt_sq * WEIGHT_SEC_BALANCE_SQ)
                 
                 diff = model.NewIntVar(-100, 100, f"diff_{sec}_{d}")
                 abs_diff = model.NewIntVar(0, 100, f"abs_diff_{sec}_{d}")
-                model.Add(diff == core_cnt_var - int(M_s))
+                model.Add(diff == target_cnt_var - int(round(M_s)))
                 model.AddAbsEquality(abs_diff, diff)
                 penalties.append(abs_diff * WEIGHT_SEC_BALANCE_ABS)
+
+                # 【1階特例】平均目標人数が6.5名以上の場合、できるだけ6名以下を避けるペナルティ
+                if sec == "1階" and M_s >= 6.5:
+                    is_under_7 = model.NewBoolVar(f"is_under_7_{d.strftime('%Y%m%d')}")
+                    model.Add(target_cnt_var <= 6).OnlyEnforceIf(is_under_7)
+                    model.Add(target_cnt_var >= 7).OnlyEnforceIf(is_under_7.Not())
+                    penalties.append(is_under_7 * 1500000)
 
         if d.weekday() != 6 and d not in holidays_jp:
             c2b = sec_cnt[("2階裏", d)] 
@@ -370,6 +456,35 @@ def solve_monthly_shift(
                 model.Add(nurse_cnt < cfg.nurse_rec_count).OnlyEnforceIf(is_lt_rec)
                 model.Add(nurse_cnt >= cfg.nurse_rec_count).OnlyEnforceIf(is_lt_rec.Not())
                 penalties.append(is_lt_rec * WEIGHT_NURSE_LT2_PENALTY)
+
+    # 【2階裏 通常週の4名体制平準化 (v1.6)】
+    # 月〜土の6診療日がある通常週において、特定週に3名体制が集中するのを防止し各週に4名出勤日を均等分散
+    if cfg.sec_2f_back_weekly_4_min > 0:
+        for w_key, week_dates in weeks.items():
+            week_work_days = [d for d in week_dates if d.weekday() != 6 and d not in holidays_jp]
+            if len(week_work_days) == 6:
+                # 2階裏スタッフの当該週有休・特別有休による人数減を考慮
+                vac_in_week = sum(
+                    1 for d in week_work_days for s in staff_list
+                    if s['section'] == '2階裏' and s['is_core'] and (
+                        d in s.get('vacation_dates', set()) or d in s.get('special_vacation_dates', set())
+                    )
+                )
+                eff_min_4 = max(0, cfg.sec_2f_back_weekly_4_min - vac_in_week)
+                if eff_min_4 > 0:
+                    cnt_4_list = []
+                    for d in week_work_days:
+                        b4 = model.NewBoolVar(f"sec_b4_{w_key[0]}_{w_key[1]}_{d.strftime('%Y%m%d')}")
+                        model.Add(sec_cnt[("2階裏", d)] >= 4).OnlyEnforceIf(b4)
+                        model.Add(sec_cnt[("2階裏", d)] < 4).OnlyEnforceIf(b4.Not())
+                        cnt_4_list.append(b4)
+                    
+                    if stage == 1:
+                        model.Add(sum(cnt_4_list) >= eff_min_4)
+                    else:
+                        slack_4 = model.NewIntVar(0, 6, f"slack_w4_{w_key[0]}_{w_key[1]}")
+                        model.Add(sum(cnt_4_list) + slack_4 >= eff_min_4)
+                        penalties.append(slack_4 * WEIGHT_2F_BACK_WEEKLY_4_SLACK)
 
     for idx, row in df_rules.iterrows():
         r_cond = str(row.get('適用条件', '')).strip()
